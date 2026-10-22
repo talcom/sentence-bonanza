@@ -514,20 +514,24 @@
     sfx.flip();
     await wait(380);
 
+    if (!isCurrent(cur)) return;
     const correct = card.dataset.word === cur.sentence.answer;
     if (correct) {
       const pts = POINTS[cur.attempts - 1];
       card.classList.add("right");
       cur.done = true;
-      board.dataset.phase = "resolved";
+      cur.targetStars = game.stars + pts;
       recordRound(cur.attempts, true);
-      const { reading } = await celebrate(card, pts, cur.attempts);
-      if (game.stars >= WIN_STARS) {
+      const winning = cur.targetStars >= WIN_STARS;
+      // Next is usable straight away (it skips the rest of the celebration),
+      // except when this answer wins the game.
+      unlockNext(cur, winning);
+      const { reading } = await celebrate(card, pts, cur.attempts, cur);
+      if (!isCurrent(cur)) return;
+      if (winning) {
         await Promise.race([reading, wait(6000)]);
         return endGame("win");
       }
-      busy = false;
-      $("#btn-next").focus({ preventScroll: true });
       return;
     }
 
@@ -535,28 +539,55 @@
     card.classList.add("wrong");
     sfx.wrong();
     await loseStars(PENALTY);
+    if (!isCurrent(cur)) return;
     if (game.stars <= 0) {
       cur.done = true;
       recordRound(cur.attempts, false);
-      const { reading } = await revealAnswer();
+      board.dataset.phase = "ending";
+      const { reading } = await revealAnswer(cur);
       await Promise.race([reading, wait(6000)]);
       return endGame("lose");
     }
     if (cur.attempts >= MAX_TRIES) {
       cur.done = true;
+      cur.targetStars = game.stars;
       recordRound(cur.attempts, false);
-      await revealAnswer();
-      board.dataset.phase = "resolved";
-      busy = false;
-      $("#btn-next").focus({ preventScroll: true });
+      unlockNext(cur, false);
+      await revealAnswer(cur);
       return;
     }
     busy = false;
   }
 
+  // True while `cur` is still the round on screen (guards async animation steps
+  // so a finished round can never touch the next one).
+  function isCurrent(cur) {
+    return !!game && !game.over && game.cur === cur;
+  }
+
+  function unlockNext(cur, ending) {
+    if (!isCurrent(cur)) return;
+    $("#board").dataset.phase = ending ? "ending" : "resolved";
+    busy = false;
+    if (!ending) $("#btn-next").focus({ preventScroll: true });
+  }
+
+  // Remove any in-flight effects (flying stars, flying word, confetti, banner).
+  function clearEffects() {
+    $$(".fly-star, .fly-word, .confetti, .float-text, .flash").forEach((e) => {
+      try { e.getAnimations().forEach((a) => a.cancel()); } catch (err) { /* ignore */ }
+      e.remove();
+    });
+    const b = $("#banner");
+    b.className = "banner";
+    b.textContent = "";
+    $("#star-count").classList.remove("shake", "pulse");
+  }
+
   // The answer word flies off its card, swoops into the blank and lands with a
   // burst; then the whole sentence does a wave. Resolves when the wave finishes.
-  async function landWord(card, missed) {
+  async function landWord(card, missed, cur) {
+    if (!isCurrent(cur)) return;
     const el = $("#sentence");
     const answer = game.cur.sentence.answer;
     el.classList.remove("reveal", "wave");
@@ -588,8 +619,9 @@
         { duration: 750, easing: "cubic-bezier(.5,0,.3,1)", fill: "both" }
       );
       sfx.whoosh();
-      await anim.finished.catch(() => {});
+      await Promise.race([anim.finished.catch(() => {}), wait(1100)]);
       fly.remove();
+      if (!isCurrent(cur)) return;
     }
 
     blank.classList.remove("pending");
@@ -599,7 +631,7 @@
     el.classList.add("wave");
     const n = $$(".w", el).length;
     await wait(500 + n * 45);
-    el.classList.remove("wave");
+    if (isCurrent(cur)) el.classList.remove("wave");
   }
 
   function sparkleBurst(at, n, muted) {
@@ -623,17 +655,21 @@
   }
 
   // Returns a promise for the read-along (so callers can wait for it if they need to).
-  async function revealAnswer() {
-    const card = $$(".card").find((c) => c.dataset.word === game.cur.sentence.answer);
+  async function revealAnswer(cur) {
+    const none = { reading: Promise.resolve() };
+    const card = $$(".card").find((c) => c.dataset.word === cur.sentence.answer);
     await wait(350);
+    if (!isCurrent(cur)) return none;
     if (card) {
       card.classList.add("up", "revealed");
       card.setAttribute("aria-label", card.dataset.word);
     }
     sfx.reveal();
     await wait(450);
-    banner("The answer is “" + game.cur.sentence.answer + "”", true);
-    await landWord(card, true);
+    if (!isCurrent(cur)) return none;
+    banner("The answer is “" + cur.sentence.answer + "”", true);
+    await landWord(card, true, cur);
+    if (!isCurrent(cur)) return none;
     const reading = readAlong();
     await wait(600);
     return { reading };
@@ -689,7 +725,7 @@
     ["Got it!", "Good thinking!", "Phew!"],
   ];
 
-  async function celebrate(card, pts, attempts) {
+  async function celebrate(card, pts, attempts, cur) {
     const big = attempts === 1;
     sfx.win(big);
     const words = PRAISE[attempts - 1];
@@ -703,20 +739,29 @@
     } else if (attempts === 2) {
       confetti(centerOf(card), 22);
     }
-    const stars = flyStars(card, pts, big);
-    await landWord(card, false);
-    const reading = readAlong();
+    const stars = flyStars(card, pts, big, cur);
+    await landWord(card, false, cur);
+    const reading = isCurrent(cur) ? readAlong() : Promise.resolve();
     await stars;
     return { reading };
   }
 
-  function flyStars(fromEl, count, big) {
+  function flyStars(fromEl, count, big, cur) {
     return new Promise((resolve) => {
       const from = centerOf(fromEl);
       const to = centerOf($("#star-count .star-icon"));
       let arrived = 0;
+      let settled = false;
       const startStars = game.stars;
-      if (!count) return resolve();
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        // Whatever happened to the animations, the score ends up right.
+        if (isCurrent(cur) && game.stars !== startStars + count) setStars(startStars + count);
+        resolve();
+      };
+      if (!count) return done();
+      setTimeout(done, (big ? 1300 + count * 70 : 1000 + count * 90) + 900);
       for (let i = 0; i < count; i++) {
         const s = document.createElement("div");
         s.className = "fly-star";
@@ -739,12 +784,13 @@
         );
         anim.onfinish = () => {
           s.remove();
+          if (settled || !isCurrent(cur)) return;
           arrived += 1;
           sfx.tick(arrived);
           setStars(startStars + arrived);
           if (arrived === count) {
             floatText("+" + count, to, "plus");
-            setTimeout(resolve, 350);
+            setTimeout(done, 350);
           }
         };
       }
@@ -823,8 +869,15 @@
     }
   }
 
+  // Next works whenever the sentence is settled, even mid-celebration:
+  // it skips leftover effects, applies the final star count, and moves on.
   function onNext() {
-    if (busy || $("#board").dataset.phase !== "resolved") return;
+    if (!game || game.over || $("#board").dataset.phase !== "resolved") return;
+    const cur = game.cur;
+    clearEffects();
+    stopReading();
+    if (cur && typeof cur.targetStars === "number") setStars(cur.targetStars, false);
+    busy = false;
     nextRound();
   }
 
@@ -870,6 +923,7 @@
     if (game) game.over = true;
     busy = false;
     stopReading();
+    clearEffects();
     renderHome();
     show("home");
   }
@@ -1295,7 +1349,13 @@
     // Keyboard: Enter while memorizing (and nothing else focused) presses Go.
     document.addEventListener("keydown", (e) => {
       if (!$("#screen-game").classList.contains("active")) return;
-      if (e.key === "Enter" && $("#board").dataset.phase === "memorize" && document.activeElement.tagName !== "BUTTON") onGo();
+      const onButton = document.activeElement && document.activeElement.tagName === "BUTTON";
+      const phase = $("#board").dataset.phase;
+      if (e.key === "Enter" && phase === "memorize" && !onButton) onGo();
+      if (phase === "resolved" && (e.key === "ArrowRight" || (!onButton && (e.key === "Enter" || e.key === " ")))) {
+        e.preventDefault();
+        onNext();
+      }
     });
 
     // Testing hook (harmless in production): lets automated tests read state.
