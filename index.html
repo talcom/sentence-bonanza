@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sentence Bonanza</title>
+  <meta name="description" content="A memory-and-reading game for 2nd and 3rd graders: find the word that completes the sentence.">
+  <meta name="theme-color" content="#1b1446">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⭐</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Andika:wght@400;700&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+
+  <!-- ============ HOME / LEVEL SELECT ============ -->
+  <main id="screen-home" class="screen active">
+    <header class="hero">
+      <h1 class="logo">
+        <span class="logo-line">Sentence</span>
+        <span class="logo-line logo-big">Bonanza<span class="logo-star">★</span></span>
+      </h1>
+      <p class="tagline">Remember the words. Find the one that fits!</p>
+    </header>
+
+    <section class="how" aria-label="How to play">
+      <ol>
+        <li><span class="how-num">1</span>Look at the words on the cards.</li>
+        <li><span class="how-num">2</span>Press <b>Go!</b> and the cards flip over.</li>
+        <li><span class="how-num">3</span>Read the sentence and find the missing word.</li>
+      </ol>
+      <p class="how-goal">You start with <b>100 ★</b>. Reach <b>250 ★</b> to become a Superstar!</p>
+    </section>
+
+    <h2 class="section-title">Pick your level</h2>
+    <div id="level-list" class="level-list"></div>
+
+    <footer class="home-foot">
+      <button id="btn-parent" class="btn btn-ghost">Grown-ups</button>
+      <button id="btn-mute-home" class="btn btn-ghost btn-mute" aria-label="Sound on or off">🔊 Sound on</button>
+    </footer>
+  </main>
+
+  <!-- ============ GAME ============ -->
+  <main id="screen-game" class="screen">
+    <header class="game-bar">
+      <button id="btn-quit" class="btn btn-small btn-ghost" aria-label="Back to levels">← Levels</button>
+      <div class="game-level" id="game-level"></div>
+      <div class="star-meter" aria-live="polite">
+        <div class="star-count" id="star-count"><span class="star-icon">★</span><span id="star-num">100</span></div>
+        <div class="meter" title="Get to 250 stars to win!">
+          <div class="meter-fill" id="meter-fill"></div>
+          <span class="meter-goal">250</span>
+        </div>
+      </div>
+      <button id="btn-mute" class="btn btn-small btn-ghost btn-mute" aria-label="Sound on or off">🔊</button>
+    </header>
+
+    <div class="round-info">
+      <span id="round-num">Sentence 1</span>
+      <span class="tries" id="tries" aria-label="Tries left"></span>
+    </div>
+
+    <section id="board" class="board">
+      <div class="sentence-panel" id="sentence-panel">
+        <div class="sentence" id="sentence"></div>
+        <div class="panel-actions">
+          <button id="btn-speak" class="btn btn-small btn-ghost" aria-label="Read the sentence out loud">🔊 Read it to me</button>
+          <button id="btn-go" class="btn btn-go">Go!</button>
+          <button id="btn-next" class="btn btn-go btn-next">Next →</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="banner" class="banner" aria-live="assertive"></div>
+  </main>
+
+  <!-- ============ END ============ -->
+  <main id="screen-end" class="screen">
+    <div class="end-card">
+      <div class="end-emoji" id="end-emoji">🌟</div>
+      <h2 class="end-title" id="end-title">Superstar!</h2>
+      <p class="end-sub" id="end-sub"></p>
+      <div class="end-stats" id="end-stats"></div>
+      <div class="end-list" id="end-list"></div>
+      <div class="end-actions">
+        <button id="btn-again" class="btn btn-go">Play again</button>
+        <button id="btn-home" class="btn btn-ghost">Choose a level</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ PARENT ============ -->
+  <main id="screen-parent" class="screen">
+    <div class="parent-wrap">
+      <header class="parent-head">
+        <button id="btn-parent-back" class="btn btn-small btn-ghost">← Back to game</button>
+        <h2>Grown-ups' corner</h2>
+      </header>
+
+      <div id="gate" class="gate">
+        <p>Grown-ups only. Please answer:</p>
+        <p class="gate-q" id="gate-q"></p>
+        <form id="gate-form" class="gate-form">
+          <input id="gate-input" inputmode="numeric" autocomplete="off" aria-label="Answer">
+          <button class="btn btn-go btn-small" type="submit">Enter</button>
+        </form>
+        <p class="gate-err" id="gate-err"></p>
+      </div>
+
+      <div id="parent-body" class="parent-body" hidden>
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="sentences" role="tab">Sentences</button>
+          <button class="tab" data-tab="progress" role="tab">Progress</button>
+          <button class="tab" data-tab="newlevel" role="tab">Add a level</button>
+        </nav>
+
+        <section class="tab-panel active" id="tab-sentences">
+          <div class="level-picker" id="parent-level-picker"></div>
+          <div id="parent-level-detail"></div>
+        </section>
+
+        <section class="tab-panel" id="tab-progress">
+          <div id="progress-summary"></div>
+          <h3>Recent games</h3>
+          <div id="game-history"></div>
+          <div class="danger-zone">
+            <h3>Reset</h3>
+            <p>Clears scores and stats. Custom levels are kept.</p>
+            <button id="btn-reset-stats" class="btn btn-danger btn-small">Reset scores &amp; stats</button>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-newlevel">
+          <form id="new-level-form" class="form">
+            <h3>Create a new level</h3>
+            <label>Level name
+              <input name="name" required maxlength="30" placeholder="e.g. Spelling Words Week 5">
+            </label>
+            <label>Emoji
+              <input name="emoji" maxlength="4" placeholder="🦄" value="🦄">
+            </label>
+            <label>Short description
+              <input name="blurb" maxlength="60" placeholder="e.g. This week's vocabulary">
+            </label>
+            <label>Cards per sentence
+              <select name="cards">
+                <option value="4">4 cards (easier)</option>
+                <option value="6" selected>6 cards</option>
+                <option value="8">8 cards (harder)</option>
+              </select>
+            </label>
+            <button class="btn btn-go btn-small" type="submit">Create level</button>
+            <p class="hint">After creating it you'll add sentences to it.</p>
+          </form>
+
+          <div class="form io">
+            <h3>Back up or share custom levels</h3>
+            <div class="io-row">
+              <button id="btn-export" class="btn btn-ghost btn-small">Download custom levels</button>
+              <label class="btn btn-ghost btn-small file-btn">Load levels from file
+                <input type="file" id="import-file" accept="application/json,.json" hidden>
+              </label>
+            </div>
+            <p class="hint" id="io-msg"></p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/levels.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
