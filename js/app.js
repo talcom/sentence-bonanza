@@ -85,12 +85,44 @@
   }
   const findLevel = (id) => allLevels().find((l) => l.id === id);
 
-  function renderSentenceHTML(text, fill, cls) {
-    const parts = text.split(BLANK_RE);
-    const before = esc(parts[0] || "");
-    const after = esc(parts.slice(1).join("___") || "");
-    const inner = fill ? esc(fill) : "&nbsp;";
-    return `${before}<span class="blank ${fill ? "filled" : ""} ${cls || ""}">${inner}</span>${after}`;
+  // Split a sentence into word tokens, with the blank filled by `spokenFill`.
+  // Returns the exact string that will be spoken plus each word's character range,
+  // so speech "boundary" events can be mapped back to on-screen words.
+  function tokenize(text, spokenFill) {
+    const m = text.match(BLANK_RE);
+    const idx = m ? m.index : text.length;
+    const before = text.slice(0, idx);
+    const after = m ? text.slice(idx + m[0].length) : "";
+    const spoken = before + spokenFill + after;
+    const aStart = before.length;
+    const aEnd = aStart + spokenFill.length;
+    const tokens = [];
+    const re = /\S+/g;
+    let t;
+    while ((t = re.exec(spoken))) {
+      const start = t.index;
+      const end = start + t[0].length;
+      tokens.push({ start, end, text: t[0], isAns: !!m && start < aEnd && end > aStart });
+    }
+    return { spoken, tokens, aStart, aEnd };
+  }
+
+  // Render the sentence as word spans. `fill` = word shown in the blank (null = empty blank).
+  function renderSentence(text, fill, cls) {
+    const view = tokenize(text, fill || "blank");
+    const html = view.tokens
+      .map((tk, i) => {
+        if (!tk.isAns) return `<span class="w" data-i="${i}" style="--i:${i}">${esc(tk.text)}</span>`;
+        const pre = view.spoken.slice(tk.start, Math.max(tk.start, view.aStart));
+        const post = view.spoken.slice(Math.min(tk.end, view.aEnd), tk.end);
+        const inner = fill ? esc(fill) : "&nbsp;";
+        return `<span class="w w-ans" data-i="${i}" style="--i:${i}">${esc(pre)}<span class="blank ${fill ? "filled" : ""} ${cls || ""}">${inner}</span>${esc(post)}</span>`;
+      })
+      .join(" ");
+    const el = $("#sentence");
+    el.innerHTML = html;
+    if (game && game.cur) game.cur.view = view;
+    return view;
   }
 
   // ------------------------------------------------------------------
@@ -135,18 +167,150 @@
     wrong() { tone(220, 0, 0.22, "sawtooth", 0.07); tone(180, 0.12, 0.3, "sawtooth", 0.07); },
     reveal() { tone(440, 0, 0.25, "triangle", 0.1); tone(554, 0.15, 0.35, "triangle", 0.1); },
     fanfare() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.13, 0.35, "square", 0.07)); },
+    whoosh() { const c = ctx(); if (!c || settings.muted) return; [300, 500, 800, 1200].forEach((f, i) => tone(f, i * 0.06, 0.12, "sine", 0.05)); },
+    thud(missed) { tone(missed ? 330 : 523, 0, 0.18, "triangle", 0.18); tone(missed ? 440 : 1047, 0.06, 0.4, "sine", 0.12); },
     sad() { [392, 349, 311, 262].forEach((f, i) => tone(f, i * 0.22, 0.4, "triangle", 0.1)); },
   };
 
+  const HAS_SPEECH = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+  const SPEECH_RATE = 0.85;
+  let voice = null;
+  // Prefer an on-device English voice: those report word boundaries, which
+  // drive the word-by-word highlighting. Network voices fall back to timing.
+  function pickVoice() {
+    if (!HAS_SPEECH) return;
+    const vs = window.speechSynthesis.getVoices() || [];
+    const en = vs.filter((v) => /^en[-_]/i.test(v.lang) || v.lang === "en");
+    voice =
+      en.find((v) => v.localService && /^en[-_]US/i.test(v.lang) && v.default) ||
+      en.find((v) => v.localService && /^en[-_]US/i.test(v.lang)) ||
+      en.find((v) => v.localService) ||
+      en[0] ||
+      null;
+  }
+  function makeUtterance(text) {
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = SPEECH_RATE;
+    u.pitch = 1.05;
+    if (voice) {
+      u.voice = voice;
+      u.lang = voice.lang;
+    }
+    return u;
+  }
+
   function speak(text) {
-    if (settings.muted || !("speechSynthesis" in window)) return;
+    stopReading();
+    if (settings.muted || !HAS_SPEECH) return;
     try {
       window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = 0.85;
-      u.pitch = 1.05;
-      window.speechSynthesis.speak(u);
+      window.speechSynthesis.speak(makeUtterance(text));
     } catch (e) { /* ignore */ }
+  }
+
+  // ---------- read-along: speak the sentence, emphasizing each word in time ----------
+  let readId = 0;
+  let readTimers = [];
+  function stopReading() {
+    readId += 1;
+    readTimers.forEach(clearTimeout);
+    readTimers = [];
+    $$("#sentence .w").forEach((w) => w.classList.remove("speaking", "spoken"));
+    $("#sentence").classList.remove("reading");
+    if (HAS_SPEECH) {
+      try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function syllables(word) {
+    const w = word.toLowerCase().replace(/[^a-z]/g, "");
+    if (!w) return 1;
+    const groups = w.replace(/e$/, "").match(/[aeiouy]+/g);
+    return Math.max(1, groups ? groups.length : 1);
+  }
+  // Estimated time to say a word at SPEECH_RATE (used when the voice gives no boundary events).
+  function wordMs(text) {
+    let ms = (130 + syllables(text) * 175) / SPEECH_RATE;
+    if (/[,;:]$/.test(text)) ms += 220;
+    return ms;
+  }
+
+  function readAlong() {
+    stopReading();
+    const id = readId;
+    const view = game && game.cur && game.cur.view;
+    const els = $$("#sentence .w");
+    if (!view || !els.length) return Promise.resolve();
+    $("#sentence").classList.add("reading");
+
+    return new Promise((resolve) => {
+      let speaking = false;
+      let gotBoundary = false;
+      let timedMode = false;
+      let current = -1;
+      const later = (fn, ms) => readTimers.push(setTimeout(() => { if (id === readId) fn(); }, ms));
+
+      const highlight = (i) => {
+        if (i === current) return;
+        current = i;
+        els.forEach((e, j) => {
+          e.classList.toggle("speaking", j === i);
+          e.classList.toggle("spoken", j < i);
+        });
+      };
+      const finish = () => {
+        if (id !== readId) return resolve();
+        readTimers.forEach(clearTimeout);
+        readTimers = [];
+        els.forEach((e) => { e.classList.remove("speaking"); e.classList.add("spoken"); });
+        setTimeout(() => {
+          if (id === readId) {
+            els.forEach((e) => e.classList.remove("spoken"));
+            $("#sentence").classList.remove("reading");
+          }
+          resolve();
+        }, 450);
+      };
+      // Timed highlighting: used when muted, when speech is unavailable,
+      // or when the voice doesn't report word boundaries.
+      const runTimed = (headStart) => {
+        if (timedMode || gotBoundary) return;
+        timedMode = true;
+        let t = 0;
+        view.tokens.forEach((tk, i) => {
+          later(() => highlight(i), Math.max(0, t - headStart));
+          t += wordMs(tk.text);
+        });
+        later(() => { if (!speaking) finish(); }, Math.max(0, t - headStart) + 150);
+      };
+
+      if (settings.muted || !HAS_SPEECH) return runTimed(0);
+
+      const u = makeUtterance(view.spoken);
+      u.onstart = () => {
+        if (id !== readId) return;
+        speaking = true;
+        highlight(0);
+        later(() => runTimed(350), 350); // no boundary events within 350ms → use timing
+      };
+      u.onboundary = (e) => {
+        if (id !== readId || timedMode) return;
+        if (e.name && e.name !== "word") return;
+        gotBoundary = true;
+        const i = view.tokens.findIndex((tk) => e.charIndex >= tk.start && e.charIndex < tk.end);
+        if (i >= 0) highlight(i);
+      };
+      u.onend = () => { speaking = false; if (id === readId) finish(); else resolve(); };
+      u.onerror = () => { speaking = false; if (id === readId) { if (!timedMode && !gotBoundary) runTimed(0); else finish(); } else resolve(); };
+      // If speech never starts (no voices installed, autoplay blocked), still animate.
+      later(() => { if (!speaking && !timedMode && !gotBoundary) runTimed(0); }, 1200);
+      try {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      } catch (e) {
+        runTimed(0);
+      }
+    });
   }
 
   function updateMuteButtons() {
@@ -157,7 +321,7 @@
     settings.muted = !settings.muted;
     save(KEYS.settings, settings);
     updateMuteButtons();
-    if (settings.muted && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (settings.muted && HAS_SPEECH) window.speechSynthesis.cancel();
   }
 
   // ------------------------------------------------------------------
@@ -248,6 +412,7 @@
 
   function nextRound() {
     if (game.over) return;
+    stopReading();
     busy = true;
     const s = pickSentence();
     const lv = game.level;
@@ -315,7 +480,7 @@
     );
     setTimeout(() => {
       const el = $("#sentence");
-      el.innerHTML = renderSentenceHTML(game.cur.sentence.text);
+      renderSentence(game.cur.sentence.text, null);
       el.classList.add("reveal");
       board.dataset.phase = "guess";
       busy = false;
@@ -348,11 +513,13 @@
       const pts = POINTS[cur.attempts - 1];
       card.classList.add("right");
       cur.done = true;
-      fillBlank(false);
       board.dataset.phase = "resolved";
       recordRound(cur.attempts, true);
-      await celebrate(card, pts, cur.attempts);
-      if (game.stars >= WIN_STARS) return endGame("win");
+      const reading = await celebrate(card, pts, cur.attempts);
+      if (game.stars >= WIN_STARS) {
+        await Promise.race([reading, wait(6000)]);
+        return endGame("win");
+      }
       busy = false;
       $("#btn-next").focus({ preventScroll: true });
       return;
@@ -365,7 +532,8 @@
     if (game.stars <= 0) {
       cur.done = true;
       recordRound(cur.attempts, false);
-      await revealAnswer();
+      const reading = await revealAnswer();
+      await Promise.race([reading, wait(6000)]);
       return endGame("lose");
     }
     if (cur.attempts >= MAX_TRIES) {
@@ -380,12 +548,75 @@
     busy = false;
   }
 
-  function fillBlank(missed) {
+  // The answer word flies off its card, swoops into the blank and lands with a
+  // burst; then the whole sentence does a wave. Resolves when the wave finishes.
+  async function landWord(card, missed) {
     const el = $("#sentence");
-    el.classList.remove("reveal");
-    el.innerHTML = renderSentenceHTML(game.cur.sentence.text, game.cur.sentence.answer, missed ? "missed" : "");
+    const answer = game.cur.sentence.answer;
+    el.classList.remove("reveal", "wave");
+    renderSentence(game.cur.sentence.text, answer, missed ? "missed" : "");
+    const blank = $(".blank", el);
+    blank.classList.add("pending");
+
+    if (card) {
+      const from = card.getBoundingClientRect();
+      const to = blank.getBoundingClientRect();
+      const fly = document.createElement("div");
+      fly.className = "fly-word" + (missed ? " missed" : "");
+      fly.textContent = answer;
+      document.body.appendChild(fly);
+      const fw = fly.offsetWidth;
+      const fh = fly.offsetHeight;
+      const sx = from.left + from.width / 2 - fw / 2;
+      const sy = from.top + from.height / 2 - fh / 2;
+      const ex = to.left + to.width / 2 - fw / 2;
+      const ey = to.top + to.height / 2 - fh / 2;
+      const mx = (sx + ex) / 2;
+      const my = Math.min(sy, ey) - 120;
+      const anim = fly.animate(
+        [
+          { transform: `translate(${sx}px, ${sy}px) scale(1) rotate(0deg)`, opacity: 1 },
+          { transform: `translate(${mx}px, ${my}px) scale(1.9) rotate(${sx < ex ? 10 : -10}deg)`, opacity: 1, offset: 0.5 },
+          { transform: `translate(${ex}px, ${ey}px) scale(1) rotate(0deg)`, opacity: 1 },
+        ],
+        { duration: 750, easing: "cubic-bezier(.5,0,.3,1)", fill: "both" }
+      );
+      sfx.whoosh();
+      await anim.finished.catch(() => {});
+      fly.remove();
+    }
+
+    blank.classList.remove("pending");
+    blank.classList.add("landing");
+    sfx.thud(missed);
+    sparkleBurst(centerOf(blank), missed ? 10 : 16, missed);
+    el.classList.add("wave");
+    const n = $$(".w", el).length;
+    await wait(500 + n * 45);
+    el.classList.remove("wave");
   }
 
+  function sparkleBurst(at, n, muted) {
+    for (let i = 0; i < n; i++) {
+      const s = document.createElement("div");
+      s.className = "fly-star spark";
+      s.textContent = i % 3 ? "✦" : "★";
+      if (muted) s.style.color = "#ffb44a";
+      document.body.appendChild(s);
+      const ang = (Math.PI * 2 * i) / n;
+      const r = 70 + Math.random() * 60;
+      const a = s.animate(
+        [
+          { transform: `translate(${at.x - 10}px, ${at.y - 14}px) scale(0.3)`, opacity: 1 },
+          { transform: `translate(${at.x - 10 + Math.cos(ang) * r}px, ${at.y - 14 + Math.sin(ang) * r * 0.7}px) scale(1.1) rotate(160deg)`, opacity: 0 },
+        ],
+        { duration: 750, easing: "cubic-bezier(.1,.7,.3,1)", fill: "both" }
+      );
+      a.onfinish = () => s.remove();
+    }
+  }
+
+  // Returns a promise for the read-along (so callers can wait for it if they need to).
   async function revealAnswer() {
     const card = $$(".card").find((c) => c.dataset.word === game.cur.sentence.answer);
     await wait(350);
@@ -394,10 +625,12 @@
       card.setAttribute("aria-label", card.dataset.word);
     }
     sfx.reveal();
-    fillBlank(true);
+    await wait(450);
     banner("The answer is “" + game.cur.sentence.answer + "”", true);
-    speak(game.cur.sentence.text.replace(BLANK_RE, game.cur.sentence.answer));
-    await wait(1200);
+    await landWord(card, true);
+    const reading = readAlong();
+    await wait(600);
+    return reading;
   }
 
   function recordRound(attempts, solved) {
@@ -455,7 +688,6 @@
     sfx.win(big);
     const words = PRAISE[attempts - 1];
     banner(words[Math.floor(Math.random() * words.length)] + (big ? " +10" : " +" + pts));
-    speak(game.cur.sentence.text.replace(BLANK_RE, game.cur.sentence.answer));
     if (big) {
       const f = document.createElement("div");
       f.className = "flash";
@@ -465,7 +697,11 @@
     } else if (attempts === 2) {
       confetti(centerOf(card), 22);
     }
-    await flyStars(card, pts, big);
+    const stars = flyStars(card, pts, big);
+    await landWord(card, false);
+    const reading = readAlong();
+    await stars;
+    return reading;
   }
 
   function flyStars(fromEl, count, big) {
@@ -627,7 +863,7 @@
     if (game && !game.over && game.rounds.length) recordGame("quit");
     if (game) game.over = true;
     busy = false;
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    stopReading();
     renderHome();
     show("home");
   }
@@ -1018,14 +1254,17 @@
   // ------------------------------------------------------------------
   function init() {
     updateMuteButtons();
+    if (HAS_SPEECH) {
+      pickVoice();
+      window.speechSynthesis.addEventListener ? window.speechSynthesis.addEventListener("voiceschanged", pickVoice) : (window.speechSynthesis.onvoiceschanged = pickVoice);
+    }
     renderHome();
     $("#btn-go").addEventListener("click", onGo);
     $("#btn-next").addEventListener("click", onNext);
     $("#btn-quit").addEventListener("click", quitGame);
     $("#btn-speak").addEventListener("click", () => {
-      if (!game || !game.cur) return;
-      const s = game.cur.sentence;
-      speak(game.cur.done ? s.text.replace(BLANK_RE, s.answer) : s.text.replace(BLANK_RE, "blank"));
+      if (!game || !game.cur || !game.cur.view) return;
+      readAlong();
     });
     $("#btn-mute").addEventListener("click", toggleMute);
     $("#btn-mute-home").addEventListener("click", toggleMute);

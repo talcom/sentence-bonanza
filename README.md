@@ -18,6 +18,8 @@ A reading and vocabulary game for 2nd and 3rd graders. It runs as a static site 
 | Each wrong card | −10 (the card stays face-up) |
 | 3 wrong cards | The answer is revealed, then the next sentence |
 
+When the answer is shown, whether found or revealed, the word flies from its card into the blank and lands with a burst. Then the sentence is read aloud and each word is highlighted as it's spoken, karaoke-style. **Read it to me** does the same read-along at any time. With sound off, the highlighting still runs at reading pace.
+
 Every game starts at **100 ★**. It ends at **0 ★** (out of stars) or **250 ★** (Superstar!).
 
 ## Levels
