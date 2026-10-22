@@ -210,6 +210,7 @@
 
   // ---------- read-along: speak the sentence, emphasizing each word in time ----------
   let readId = 0;
+  let currentUtterance = null; // held so the browser doesn't garbage-collect it mid-sentence
   let readTimers = [];
   function stopReading() {
     readId += 1;
@@ -287,6 +288,11 @@
       if (settings.muted || !HAS_SPEECH) return runTimed(0);
 
       const u = makeUtterance(view.spoken);
+      currentUtterance = u;
+      // Safety net: some voices never fire "end". Stop the highlight once the
+      // sentence has certainly finished, so nothing waits on it forever.
+      const expected = view.tokens.reduce((t, tk) => t + wordMs(tk.text), 0);
+      later(() => { speaking = false; finish(); }, expected * 1.8 + 2500);
       u.onstart = () => {
         if (id !== readId) return;
         speaking = true;
@@ -515,7 +521,7 @@
       cur.done = true;
       board.dataset.phase = "resolved";
       recordRound(cur.attempts, true);
-      const reading = await celebrate(card, pts, cur.attempts);
+      const { reading } = await celebrate(card, pts, cur.attempts);
       if (game.stars >= WIN_STARS) {
         await Promise.race([reading, wait(6000)]);
         return endGame("win");
@@ -532,7 +538,7 @@
     if (game.stars <= 0) {
       cur.done = true;
       recordRound(cur.attempts, false);
-      const reading = await revealAnswer();
+      const { reading } = await revealAnswer();
       await Promise.race([reading, wait(6000)]);
       return endGame("lose");
     }
@@ -630,7 +636,7 @@
     await landWord(card, true);
     const reading = readAlong();
     await wait(600);
-    return reading;
+    return { reading };
   }
 
   function recordRound(attempts, solved) {
@@ -701,7 +707,7 @@
     await landWord(card, false);
     const reading = readAlong();
     await stars;
-    return reading;
+    return { reading };
   }
 
   function flyStars(fromEl, count, big) {
