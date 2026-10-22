@@ -32,7 +32,7 @@ Every game starts at **100 ★**. It ends at **0 ★** (out of stars) or **250 �
 | 🌌 Galaxy | 8 | Bigger vocabulary words |
 | 🌟 Supernova | 8 | Tricky words and inference |
 
-The wrong-answer words for each sentence are hand-picked so that only one card makes sense.
+Each level has 40 sentences (200 in total). The wrong-answer words for each sentence are hand-picked so that only one card makes sense. Each game starts with the sentences the player has seen least recently, so a perfect game (15 sentences) has no repeats, and neither does the next game.
 
 ## Grown-ups' corner
 

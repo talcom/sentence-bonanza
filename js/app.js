@@ -407,7 +407,11 @@
 
   function pickSentence() {
     if (!game.queue.length) {
-      let q = shuffle(game.level.sentences);
+      // Shuffle, then put never-seen and least-recently-seen sentences first,
+      // so back-to-back games don't repeat what the child just read.
+      // (sort is stable, so ties keep their random order)
+      const lastSeen = (s) => (stats[sentenceKey(game.levelId, s.text)] || {}).last || 0;
+      let q = shuffle(game.level.sentences).sort((a, b) => lastSeen(a) - lastSeen(b));
       if (q.length > 1 && game.last && q[0].text === game.last.text) q.push(q.shift());
       game.queue = q;
     }
